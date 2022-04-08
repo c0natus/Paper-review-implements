@@ -78,7 +78,7 @@ def trian_test_split(
     return dict_train, dict_test
 
 
-def to_sequence(dict_train, sequence_length, target_length):
+def to_sequence(dict_train, dict_test, sequence_length, target_length):
         """
         Transform to sequence form.
         Valid subsequences of users' interactions are returned. For
@@ -106,37 +106,28 @@ def to_sequence(dict_train, sequence_length, target_length):
 
         max_sequence_length = sequence_length + target_length
 
-        # num_users = len(dict_train.keys())
-        # counts = [len(dict_train[i]) for i in dict_train.keys()]
-        # num_subsequences = sum([c - max_sequence_length + 1 if c >= max_sequence_length else 1 for c in counts])
-
-        # sequences = np.zeros((num_subsequences, sequence_length), dtype=np.int64)
-        # sequences_targets = np.zeros((num_subsequences, target_length), dtype=np.int64)
-        # sequence_users = np.empty(num_subsequences, dtype=np.int64)
-
-        # target_sequences = np.zeros((num_users, sequence_length), dtype=np.int64)
-        # target_users = np.empty(num_users, dtype=np.int64)
-
         sequences = list()
         sequences_targets = list()
         sequence_users = list()
 
         test_sequences = list()
         test_users = list()
+        test_sequences_targets = list()
         
 
         for user in dict_train.keys():
             for seq in _sliding_window(dict_train[user], max_sequence_length):
                 sequence_users.append(user)
-                sequences.extend(seq[:sequence_length])
-                sequences_targets.extend(seq[-target_length:])
+                sequences.append(seq[:sequence_length])
+                sequences_targets.append(seq[-target_length:])
             
             test_users.append(user)
-            test_sequences.extend(dict_train[user][-sequence_length:])
+            test_sequences.append(dict_train[user][-sequence_length:])
+            test_sequences_targets.append(dict_test[user])
 
 
         train_meta_sequences = SequenceData(sequence_users, sequences, sequences_targets)
-        test_meta_sequences = SequenceData(test_users, test_sequences)
+        test_meta_sequences = SequenceData(test_users, test_sequences, test_sequences_targets)
 
         return train_meta_sequences, test_meta_sequences
 
@@ -156,11 +147,25 @@ def _sliding_window(list_items, window_size, step_size=1):
 
 class SequenceData():
     def __init__(self, user_ids, sequences, targets=None):
-        self.user_ids = np.array(user_ids, dtype=np.int64)
+        self.sequence_users = np.array(user_ids, dtype=np.int64)
         self.sequences = np.array(sequences, dtype=np.int64)
-        self.targets = np.array(targets, dtype=np.int64)
+        self.L = self.sequences.shape[1]
 
-        self.L = sequences.shape[1]
+        self.sequences_targets = None
         self.T = None
         if np.any(targets):
-            self.T = targets.shape[1]
+            self.sequences_targets = np.array(targets, dtype=np.int64)
+            self.T = self.sequences_targets.shape[1]
+
+
+def to_sequence_inference(dict_all, sequence_length):
+    users = list()
+    sequences = list()
+    for user in dict_all.keys():
+        users.append(user)
+        sequences.append(dict_all[user][-sequence_length:])
+    
+    data_meta = SequenceData(users, sequences)
+
+    return data_meta
+

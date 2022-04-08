@@ -57,7 +57,7 @@ class Caser(nn.Module):
             self.ac_fc()
             )
 
-        # W2, b2 are encoded with nn.Embedding, as we don't need to compute scores for all items
+        # W2, b2 are encoded with nn.Embedding, as we don't need to compute scopredict for all items
         # 만약 nn.Linear로 계산하면 모든 item에 대한 확률을 계산한다.
         # 하지만, positive sampling과 negative sampling만을 예측하는 것이 더 효율적이다.
         self.W2 = nn.Embedding(num_items, dims+dims)
@@ -73,9 +73,9 @@ class Caser(nn.Module):
         self.b2.weight.data.zero_()
 
     
-    def forward(self, seq_var, user_var, item_var, for_pred=False):
+    def forward(self, user_var, seq_var, item_var, for_pred=False):
         """
-        The forward propagation used to get recommendation scores, given
+        The forward propagation used to get recommendation scopredict, given
         triplet (user, sequence, targets).
         
         Args:
@@ -83,7 +83,7 @@ class Caser(nn.Module):
                 a batch of sequence
             user_var: torch.LongTensor with size [batch_size]
                 a batch of user
-            item_var: torch.LongTensor with size [batch_size]
+            item_var: torch.LongTensor with size [batch_size, L]
                 a batch of items
             for_pred: boolean, optional
                 Train or Prediction. Set to True when evaluation.
@@ -91,9 +91,10 @@ class Caser(nn.Module):
 
         # Embedding Look-up
         item_embs = self.item_embeddings(seq_var).unsqueeze(1)  # use unsqueeze() to get 4-D
-        user_emb = self.user_embeddings(user_var).squeeze(1)
+        user_emb = self.user_embeddings(user_var)
 
         # Convolutional Layers
+        # weight (4-D): [out_channels, in_channels, L, 1]
         out, out_h, out_v = None, None, None
         # vertical conv layer
         if self.n_v:
@@ -109,38 +110,27 @@ class Caser(nn.Module):
                 out_hs.append(pool_out)
             out_h = torch.cat(out_hs, 1)  # prepare for fully connect
 
-        # Fully-connected Layers
+        # Fully-connected Layers's input
         out = torch.cat([out_v, out_h], 1)
-        # apply dropout
-        out = self.dropout(out)
 
         # fully-connected layer
-        z = self.ac_fc(self.fc1(out))
+        z = self.fc1_layer(out)
         x = torch.cat([z, user_emb], 1)
 
+        # item_var = pos_items(T) + num_neg_samples
+        # Embedding Look up
         w2 = self.W2(item_var)
         b2 = self.b2(item_var)
 
         if for_pred:
             w2 = w2.squeeze()
             b2 = b2.squeeze()
-            res = (x * w2).sum(1) + b2
+            # top K를 뽑을 것이기 때문에 sigmoid 필요 없다.
+            predict = (x * w2).sum(1) + b2
         else:
-            res = torch.baddbmm(b2, w2, x.unsqueeze(2)).squeeze()
+            # torch.baddbmm:
+            #   batch matrix-matrix product of matrices w2, x.
+            #   b2 is added to the final result
+            predict = torch.sigmoid(torch.baddbmm(b2, w2, x.unsqueeze(2)).squeeze())
 
-        return res
-
-
-class CaserLoss(nn.Modlue):
-    def __init__(self):
-        super(CaserLoss, self).__init__()
-
-    def forward(self, targets_prediction, negatives_prediction):
-        # BCE 직접 구현...
-        positive_loss = -torch.mean(nn.LogSigmoid(targets_prediction))
-        negative_loss = -torch.mean(
-            torch.log(1 - torch.sigmoid(negatives_prediction))
-        )
-
-        loss = positive_loss + negative_loss
-        return loss
+        return predict
