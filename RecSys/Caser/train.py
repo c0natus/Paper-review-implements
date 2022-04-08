@@ -9,6 +9,9 @@ from dataset import get_dataloader
 from caser import Caser
 from metric import get_Recall, get_NDCG
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 class Trainer():
     def __init__(
         self,
@@ -155,41 +158,53 @@ class Trainer():
         np_gt = np.concatenate((np_pos, np_neg), axis=-1)
 
         return torch.from_numpy(np_gt).float()
-        
+
+def plot_loss(epochs, all_loss, model_name, dir_output, loss_name=['Loss', 'Recall', 'NDCG']):
+    fig, axes = plt.subplots(1, 3, figsize=(30, 7))
+    fig.suptitle(model_name, fontsize=30)
+    x_list = [i for i in range(1, epochs+1)]
+    
+    for i in range(3):
+        sns.lineplot(
+            x=x_list, y=all_loss[i],
+            ax = axes[i]
+        )
+
+        axes[i].set_ylabel(loss_name[i])
+        axes[i].set_xlabel('Epochs')
+    
+    plt.show()
+    plt.savefig(os.path.join(dir_output, f'{model_name}.png'), dpi=300)
+       
 
 if __name__ == '__main__':
-    # config args
-    config_parser = argparse.ArgumentParser()
+    # hyper args
+    parser = argparse.ArgumentParser()
 
-    config_parser.add_argument("--data_dir", default='/opt/ml/paper/RecSys/Data/ml-latest-small', type=str)
-    config_parser.add_argument("--output_dir", default="output", type=str)
-    config_parser.add_argument("--data_file", default="ratings.csv", type=str)
-    config_parser.add_argument("--seed", default=42, type=int)
-    config_parser.add_argument("--num_valid_item", default=3, type=int)
+    parser.add_argument("--batch_size", default=512, type=int)
+    parser.add_argument("--learning_rate", default=1e-3, type=float)
+    parser.add_argument("--num_neg_samples", default=3, type=int)
+    parser.add_argument("--epochs", default=50, type=int)
 
     # model args
-    model_parser = argparse.ArgumentParser()
+    parser.add_argument('--d', type=int, default=50)
+    parser.add_argument('--nv', type=int, default=4)
+    parser.add_argument('--nh', type=int, default=16)
+    parser.add_argument('--drop', type=float, default=0.5)
+    parser.add_argument('--ac_conv', type=str, default='relu')
+    parser.add_argument('--ac_fc', type=str, default='relu')
+    parser.add_argument("--L", default=5, type=int)
+    parser.add_argument("--T", default=3, type=int)
 
-    model_parser.add_argument('--d', type=int, default=50)
-    model_parser.add_argument('--nv', type=int, default=4)
-    model_parser.add_argument('--nh', type=int, default=16)
-    model_parser.add_argument('--drop', type=float, default=0.5)
-    model_parser.add_argument('--ac_conv', type=str, default='relu')
-    model_parser.add_argument('--ac_fc', type=str, default='relu')
-    model_parser.add_argument("--L", default=5, type=int)
-    model_parser.add_argument("--T", default=3, type=int)
+    # config args
+    parser.add_argument("--data_dir", default='/opt/ml/paper/RecSys/Data/ml-latest-small', type=str)
+    parser.add_argument("--output_dir", default="output", type=str)
+    parser.add_argument("--data_file", default="ratings.csv", type=str)
+    parser.add_argument("--seed", default=42, type=int)
+    parser.add_argument("--num_valid_item", default=3, type=int)
 
-    # hyper args
-    hyper_parser = argparse.ArgumentParser()
-
-    hyper_parser.add_argument("--batch_size", default=512, type=int)
-    hyper_parser.add_argument("--learning_rate", default=1e-3, type=float)
-    hyper_parser.add_argument("--num_neg_samples", default=3, type=int)
-    hyper_parser.add_argument("--epochs", default=50, type=int)
-
-    config = config_parser.parse_args()
-    model_config = model_parser.parse_args()
-    hyper = hyper_parser.parse_args()
+    
+    config = parser.parse_args()
 
     set_seed(config.seed)
     check_path(config.output_dir)
@@ -210,15 +225,15 @@ if __name__ == '__main__':
 
     # get train valid dataloader #
     dict_train, dict_valid = trian_test_split(dict_user_item, config.num_valid_item, unique_users)
-    train_meta, valid_meta = to_sequence(dict_train, dict_valid, model_config.L, model_config.T)
-    train_dataloader = get_dataloader(train_meta, hyper.batch_size)
+    train_meta, valid_meta = to_sequence(dict_train, dict_valid, config.L, config.T)
+    train_dataloader = get_dataloader(train_meta, config.batch_size)
     valid_dataloader = get_dataloader(valid_meta, 1)
     ##############################
 
     # trainer args init #
-    model = Caser(len(unique_users), len(unique_items), model_config)
+    model = Caser(len(unique_users), len(unique_items), config)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=hyper.learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     #####################
 
     torch.cuda.empty_cache() # if necessary
@@ -228,11 +243,13 @@ if __name__ == '__main__':
         optimizer=optimizer,
         train_dataloader=train_dataloader,
         valid_dataloader=valid_dataloader,
-        epochs=hyper.epochs,
+        epochs=config.epochs,
         dict_negative_samples=dict_negative_samples,
-        num_neg_samples=hyper.num_neg_samples,
+        num_neg_samples=config.num_neg_samples,
         device=device,
         output=config.output_dir
         )
 
     trainer.fit()
+    all_loss = [trainer.loss_list, trainer.recall_list, trainer.ndcg_list]
+    plot_loss(config.epochs, all_loss, 'Caser', config.output_dir)
