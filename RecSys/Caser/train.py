@@ -138,14 +138,11 @@ class Trainer():
         return avg_hr, avg_ndcg
 
     
-    def _get_neg_smaples(self, users, num_neg=None):
+    def _get_neg_smaples(self, users, num_neg=1e9):
         neg_items = list()
         users = users.detach().cpu().numpy()
         for user in users:
-            if num_neg is None:
-                # 모든 negative를 선택한다.
-                num_neg = len(self.neg_samples[user])
-            items = np.random.choice(self.neg_samples[user], min(len(self.neg_samples), num_neg), replace=False)
+            items = np.random.choice(self.neg_samples[user], min(len(self.neg_samples[user]), num_neg), replace=False)
             neg_items.append(items)
         
         return torch.from_numpy(np.array(neg_items)).long()
