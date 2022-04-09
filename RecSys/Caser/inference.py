@@ -7,7 +7,7 @@ from dataset import get_dataloader
 from utils import set_seed, check_path
 from data_preprocessing import *
 
-def inference(model, dataloader, users, negative_samples, topK, user_encoder, item_encoder, dir_output, device):
+def inference(model, dataloader, users, negative_samples, topK, user_encoder, item_encoder, dir_output, device, save_file_name):
     model.to(device)
     model.eval()
 
@@ -15,7 +15,8 @@ def inference(model, dataloader, users, negative_samples, topK, user_encoder, it
     df_item_user = pd.DataFrame(columns=user_encoder.inverse_transform([i for i in range(users)]))
     df_item_user.columns.name = 'user'
     df_item_user.index.name = 'order'
-    
+
+    print('start inferencing...')    
     with torch.no_grad():
         for user, sequence in dataloader:
             user = user.to(device)
@@ -33,38 +34,41 @@ def inference(model, dataloader, users, negative_samples, topK, user_encoder, it
     
     df_prediction = pd.DataFrame(df_item_user.unstack()).reset_index()[['user', 0]]
     df_prediction.rename(columns={0: 'item'}, inplace=True)
-    df_prediction.to_csv(os.path.join(dir_output, 'submission_Caser.csv'), index=False)
-    return df_prediction
+    df_prediction.to_csv(os.path.join(dir_output, save_file_name), index=False)
+
+    print('done!')
 
 
 
 
 if __name__ == '__main__':
     # config args
-    config_parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser()
 
-    config_parser.add_argument("--data_dir", default='/opt/ml/paper/RecSys/Data/ml-latest-small', type=str)
-    config_parser.add_argument("--output_dir", default="output", type=str)
-    config_parser.add_argument("--data_file", default="ratings.csv", type=str)
-    config_parser.add_argument("--seed", default=42, type=int)
-    config_parser.add_argument("--num_valid_item", default=0, type=int)
-    config_parser.add_argument("--topK", default=10, type=int)
+    parser.add_argument("--data_dir", default='/opt/ml/paper/RecSys/Data/ml-latest-small', type=str)
+    parser.add_argument("--data_file", default="ratings.csv", type=str)
+    parser.add_argument("--output_dir", default="output", type=str)
+    parser.add_argument("--seed", default=42, type=int)
+    parser.add_argument("--topK", default=10, type=int)
+    parser.add_argument('--save_metric', default='ndcg', type=str)
 
     # model args
-    model_parser = argparse.ArgumentParser()
-
-    model_parser.add_argument('--d', type=int, default=50)
-    model_parser.add_argument('--nv', type=int, default=4)
-    model_parser.add_argument('--nh', type=int, default=16)
-    model_parser.add_argument('--drop', type=float, default=0.5)
-    model_parser.add_argument('--ac_conv', type=str, default='relu')
-    model_parser.add_argument('--ac_fc', type=str, default='relu')
-    model_parser.add_argument("--L", default=5, type=int)
-    model_parser.add_argument("--T", default=3, type=int)
+    parser.add_argument('--d', default=50, type=int)
+    parser.add_argument('--nv', default=4, type=int)
+    parser.add_argument('--nh', default=16, type=int)
+    parser.add_argument('--drop', default=0.5, type=float)
+    parser.add_argument('--ac_conv', default='relu', type=str)
+    parser.add_argument('--ac_fc', default='relu', type=str)
+    parser.add_argument("--L", default=5, type=int)
+    parser.add_argument("--T", default=3, type=int)
 
 
-    config = config_parser.parse_args()
-    model_config = model_parser.parse_args()
+    config = parser.parse_args()
+
+    config.save_metric = config.save_metric.lower()
+    assert config.save_metric in ['ndcg', 'recall', 'loss'], "chooes metric among ndcg, recall and loss"
+    config.load_file_name = f"best_{config.save_metric}_Caser.pt"
+    config.save_file_name = f"submission_Caser_{config.save_metric}.csv"
 
     set_seed(config.seed)
     check_path(config.output_dir)
@@ -74,7 +78,9 @@ if __name__ == '__main__':
     # read file and encode both user_id and item_id #
     config.data_file_path = os.path.join(config.data_dir, config.data_file)
     df_all = pd.read_csv(config.data_file_path)
-    df_all.rename(columns={'userId': 'user_id', 'movieId': 'item_id'}, inplace=True)
+    if 'rating' in df_all.columns.values: df_all = df_all.drop('rating', axis=1)
+    column_list = df_all.columns.values
+    df_all.rename(columns={column_list[0]: 'user_id', column_list[1]: 'item_id', column_list[2]: 'timestamp'}, inplace=True)
     user_encoder, item_encoder = encode_user_item_ids(df_all, inference=True)
     #################################################
 
@@ -83,9 +89,20 @@ if __name__ == '__main__':
     dict_user_item, dict_negative_samples = get_sequence_and_negative(df_all, unique_users, unique_items)
     ######################################################################
 
-    data_meta = to_sequence_inference(dict_user_item, model_config.L)
-    dataloader = get_dataloader(data_meta, 1)
+    data_meta = to_sequence_inference(dict_user_item, config.L)
+    dataloader = get_dataloader(data_meta, 1, inference=True)
     
-    model = Caser(len(unique_users), len(unique_items), model_config)
-    model.load_state_dict(torch.load(os.path.join(config.output_dir, 'best_NDCG_Caser.pt')))
-    inference(model, dataloader, len(unique_users), dict_negative_samples, config.topK, user_encoder, item_encoder, config.output_dir, device)
+    model = Caser(len(unique_users), len(unique_items), config)
+    model.load_state_dict(torch.load(os.path.join(config.output_dir, config.load_file_name)))
+    inference(
+        model=model, 
+        dataloader=dataloader, 
+        users=len(unique_users), 
+        negative_samples=dict_negative_samples, 
+        topK=config.topK, 
+        user_encoder=user_encoder, 
+        item_encoder=item_encoder, 
+        dir_output=config.output_dir, 
+        device=device,
+        save_file_name=config.save_file_name
+        )
