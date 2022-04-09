@@ -93,7 +93,7 @@ class Trainer():
                 print("Early stopping")
                 break
         
-        print('done!')
+        print('finish training!')
 
 
     def _train(self):
@@ -277,4 +277,4 @@ if __name__ == '__main__':
 
     trainer.fit()
     all_loss = [trainer.loss_list, trainer.recall_list, trainer.ndcg_list]
-    plot_loss(config.epochs, all_loss, 'Caser', config.output_dir)
+    plot_loss(len(trainer.loss_list), all_loss, 'Caser', config.output_dir)
