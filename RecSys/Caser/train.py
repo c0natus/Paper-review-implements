@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import os
 
-from utils import set_seed, check_path
+from utils import set_seed, check_path, EarlyStopping
 from data_preprocessing import *
 from dataset import get_dataloader
 from caser import Caser
@@ -23,8 +23,12 @@ class Trainer():
         epochs,
         dict_negative_samples,
         num_neg_samples,
+        save_metric,
+        topK,
         device,
         output,
+        save_file_name,
+        patience,
         ):
         """
         Args:
@@ -40,21 +44,25 @@ class Trainer():
         self.neg_samples = dict_negative_samples
         self.num_neg_samples = num_neg_samples
         self.device = device
-        self.output = output
-
+        
+        self.early_stopping = EarlyStopping(
+            checkpoint_path=os.path.join(output, save_file_name), 
+            patience=patience,
+            save_metric=save_metric
+            )
+        self.save_metric = save_metric
         self.loss_list = list()
         self.recall_list = list()
         self.ndcg_list = list()
 
-        self.model_name = 'Caser'
-        self.topK = 10
+        self.topK = topK
     
     def fit(self):
-        best_ndcg = 0
         epoch_start = torch.cuda.Event(enable_timing=True)
         epoch_end = torch.cuda.Event(enable_timing=True)
 
         self.model.to(device)
+        print('start training...')
         for epoch in range(self.epochs):
             # 시작 시간 기록
             epoch_start.record()
@@ -76,10 +84,16 @@ class Trainer():
                 f'\t훈련시간: {epoch_start.elapsed_time(epoch_end)/1000:.2f} sec'
             )
 
-            if best_ndcg < avg_ndcg:
-                best_ndcg = avg_ndcg
-                torch.save(self.model.state_dict(), os.path.join(self.output, f'best_NDCG_{self.model_name}.pt'))
-                print(f'save ndcg: {best_ndcg:.4f}')
+            if self.save_metric == 'loss': score = avg_loss
+            elif self.save_metric == 'ndcg': score = avg_ndcg
+            else: score = avg_recall
+
+            self.early_stopping(score, self.model)
+            if self.early_stopping.early_stop:
+                print("Early stopping")
+                break
+        
+        print('done!')
 
 
     def _train(self):
@@ -175,13 +189,16 @@ def plot_loss(epochs, all_loss, model_name, dir_output, loss_name=['Loss', 'Reca
        
 
 if __name__ == '__main__':
-    # hyper args
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--batch_size", default=512, type=int)
-    parser.add_argument("--learning_rate", default=1e-3, type=float)
-    parser.add_argument("--num_neg_samples", default=3, type=int)
-    parser.add_argument("--epochs", default=50, type=int)
+    # config args
+    parser.add_argument("--data_dir", default='/opt/ml/paper/RecSys/Data/ml-latest-small', type=str)
+    parser.add_argument("--output_dir", default="output", type=str)
+    parser.add_argument("--data_file", default="ratings.csv", type=str)
+    parser.add_argument("--seed", default=42, type=int)
+    parser.add_argument("--num_valid_item", default=3, type=int)
+    parser.add_argument("--save_file_name", default='best_NDCG_Caser.pt' , type=str)
+    parser.add_argument("--topK", default=10, type=int)
 
     # model args
     parser.add_argument('--d', type=int, default=50)
@@ -193,15 +210,19 @@ if __name__ == '__main__':
     parser.add_argument("--L", default=5, type=int)
     parser.add_argument("--T", default=3, type=int)
 
-    # config args
-    parser.add_argument("--data_dir", default='/opt/ml/paper/RecSys/Data/ml-latest-small', type=str)
-    parser.add_argument("--output_dir", default="output", type=str)
-    parser.add_argument("--data_file", default="ratings.csv", type=str)
-    parser.add_argument("--seed", default=42, type=int)
-    parser.add_argument("--num_valid_item", default=3, type=int)
-
+    # hyper args
+    parser.add_argument("--batch_size", default=512, type=int)
+    parser.add_argument("--learning_rate", default=1e-3, type=float)
+    parser.add_argument("--num_neg_samples", default=3, type=int)
+    parser.add_argument("--epochs", default=50, type=int)
+    parser.add_argument('--l2', default=1e-6, type=float)
+    parser.add_argument('--patience', default=3, type=int)
+    parser.add_argument('--save_metric', default='ndcg', type=str)
     
     config = parser.parse_args()
+
+    config.save_metric = config.save_metric.lower()
+    assert config.save_metric in ['ndcg', 'recall', 'loss'], "chooes metric among ndcg, recall and loss"
 
     set_seed(config.seed)
     check_path(config.output_dir)
@@ -211,7 +232,10 @@ if __name__ == '__main__':
     # read file and encode both user_id and item_id #
     config.data_file_path = os.path.join(config.data_dir, config.data_file)
     df_all = pd.read_csv(config.data_file_path)
-    df_all.rename(columns={'userId': 'user_id', 'movieId': 'item_id'}, inplace=True)
+    if 'rating' in df_all.columns.values:
+        df_all = df_all.drop('rating', axis=1)
+    column_list = df_all.columns.values
+    df_all.rename(columns={column_list[0]: 'user_id', column_list[1]: 'item_id', column_list[2]: 'timestamp'}, inplace=True)
     encode_user_item_ids(df_all, inference=False)
     #################################################
 
@@ -230,7 +254,7 @@ if __name__ == '__main__':
     # trainer args init #
     model = Caser(len(unique_users), len(unique_items), config)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.l2)
     #####################
 
     torch.cuda.empty_cache() # if necessary
@@ -243,8 +267,12 @@ if __name__ == '__main__':
         epochs=config.epochs,
         dict_negative_samples=dict_negative_samples,
         num_neg_samples=config.num_neg_samples,
+        save_metric=config.save_metric,
+        topK=config.topK,
         device=device,
-        output=config.output_dir
+        output=config.output_dir,
+        save_file_name=config.save_file_name,
+        patience=config.patience
         )
 
     trainer.fit()
