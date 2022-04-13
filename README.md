@@ -8,6 +8,8 @@
 │   ├── Data
 │   ├── AutoRec
 │   ├── NeuMF
+│   ├── BPR
+│   ├── Caser
 │   └── 
 └── README.md
 ```
